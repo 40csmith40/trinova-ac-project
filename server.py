@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import pprint
 
 import pyemvue
@@ -27,8 +28,8 @@ async def main():
     # Login to Vue
     vue = pyemvue.PyEmVue()
     vue.login(
-        username="jsteele910@gmail.com",
-        password="TriNova1",
+        username=os.getenv("EMPORIA_USERNAME"),
+        password=os.getenv("EMPORIA_PASSWORD"),
         token_storage_file="keys.json",
     )
 
