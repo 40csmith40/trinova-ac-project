@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import pprint
-
+from datetime import datetime, timedelta, timezone
 import pyemvue
 from asyncua import Server, ua
 from pyemvue.device import VueDevice, VueDeviceChannelUsage, VueUsageDevice
@@ -30,7 +30,7 @@ async def main():
     vue.login(
         username=os.getenv("EMPORIA_USERNAME"),
         password=os.getenv("EMPORIA_PASSWORD"),
-        token_storage_file="keys.json",
+        # token_storage_file="keys.json",
     )
 
     # Get device info
@@ -112,12 +112,16 @@ async def main():
                             "usage kWh",
                             channel_usage.usage,
                         )
+                        if channel_usage.usage:
+                            _wh = channel_usage.usage * 1000
+                        else:
+                            _wh = None
                         channel_node["usage Wh"] = await channel_node[
                             "node"
                         ].add_variable(
                             idx,
                             "usage Wh",
-                            channel_usage.usage * 1000,
+                            _wh,
                         )
                         channel_node["percentage"] = await channel_node[
                             "node"
@@ -150,7 +154,10 @@ async def main():
 
         while True:
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
+
+
+            _start = datetime.now()
 
             # Get device usage objects from GID list
             device_usage_dict = vue.get_device_list_usage(
@@ -159,6 +166,8 @@ async def main():
                 scale=Scale.MINUTE.value,
                 unit=Unit.KWH.value,
             )
+
+            print((datetime.now() - _start).total_seconds())
 
             for device_gid, device_node in device_nodes.items():
 
@@ -176,8 +185,12 @@ async def main():
                             await channel_node["usage kWh"].set_value(
                                 channel_usage.usage
                             )
+                            if channel_usage.usage:
+                                _wh = channel_usage.usage * 1000
+                            else:
+                                _wh = None
                             await channel_node["usage Wh"].set_value(
-                                channel_usage.usage * 1000
+                                _wh
                             )
                             await channel_node["percentage"].set_value(
                                 channel_usage.percentage
