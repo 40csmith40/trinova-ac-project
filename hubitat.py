@@ -6,7 +6,7 @@ import requests
 class HubitatClient:
 
     access_token: str = "40a0f81c-5825-402f-8457-c33cfa052775"
-    endpoint: str = "http://192.168.55.51/apps/api/5/"
+    endpoint: str = "http://192.168.55.231/apps/api/5/"
     devices: list = []
 
     def __init__(self) -> None:
