@@ -21,22 +21,16 @@ class EmporiaVueClient:
 
     def login(self):
 
-        print("Logging in to Emporia...")
-
         self.client.login(
             username=os.getenv("EMPORIA_USERNAME"),
             password=os.getenv("EMPORIA_PASSWORD"),
             token_storage_file="keys.json",
         )
 
-        print("Emporia login complete...")
-
     def get_devices(self) -> None:
         """
         Get device info & usage
         """
-
-        print("Gathering Emporia device info...")
 
         self.device_info = self.client.get_devices()
 
@@ -46,8 +40,6 @@ class EmporiaVueClient:
         self.get_device_usage()
 
     def get_device_usage(self):
-
-        print("Gathering Emporia device usage...")
 
         # Get device usage objects from GID list
         self.device_usage_dict = self.client.get_device_list_usage(

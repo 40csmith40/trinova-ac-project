@@ -3,24 +3,22 @@ import logging
 import pprint
 import traceback
 
-from asyncua import Node, Server, ua
+from asyncua import Server, ua
 from asyncua.ua import NodeId
-from pyemvue.device import VueDeviceChannelUsage, VueUsageDevice
+from asyncua.ua.uaerrors._auto import BadNodeIdExists
 
-from emporia import EmporiaVueClient
+from helpers import bcolors
 from hubitat import HubitatClient
 
 _logger = logging.getLogger(__name__)
 
-ADD_EMPORIA_DEVICES = True
-ADD_HUBITAT_DEVICES = True
+HUBITAT_PORT = 4842
 
 
 class AsyncServer:
 
     uri: str
     index: int
-    vue: EmporiaVueClient
     hubitat: HubitatClient
     device_nodes: dict = {}
 
@@ -28,8 +26,6 @@ class AsyncServer:
         self.server = Server()
         self.server.set_server_name(name)
         self.server.set_endpoint(endpoint)
-
-        self.vue = EmporiaVueClient()
         self.hubitat = HubitatClient()
 
     async def init(self):
@@ -41,14 +37,9 @@ class AsyncServer:
         self.uri = "http://examples.freeopcua.github.io"
         self.index = await self.server.register_namespace(self.uri)
 
-        # Build out the Hubitat devices
-        if ADD_HUBITAT_DEVICES:
-            await self.build_hubitat_objects()
+        await self.build_hubitat_objects()
 
-        # Build out the Vue device nodes
-        if ADD_EMPORIA_DEVICES:
-            self.vue.login()
-            await self.build_emporia_objects()
+        print(bcolors.OKBLUE + "DONE " + bcolors.ENDC + "Node IDs created...")
 
     async def build_hubitat_objects(self):
 
@@ -61,6 +52,8 @@ class AsyncServer:
         self.hubitat.get_devices()
 
         for device in self.hubitat.devices:
+
+            # print(device)
 
             if "id" in device:
                 _device_id = device["id"]
@@ -93,6 +86,8 @@ class AsyncServer:
                 else:
                     continue
 
+                # pprint.pprint(_device_attributes)
+
                 for attribute in _device_attributes:
 
                     if "name" in attribute:
@@ -117,7 +112,7 @@ class AsyncServer:
                         _attribute_value = float(_attribute_value)
                         _attribute_varianttype = ua.VariantType.Double
 
-                    elif _attribute_type == "STRING":
+                    elif _attribute_type == "STRING" or _attribute_type == "ENUM":
                         _attribute_value = str(_attribute_value)
                         _attribute_varianttype = ua.VariantType.String
                     else:
@@ -138,264 +133,32 @@ class AsyncServer:
                             varianttype=_attribute_varianttype,
                         )
 
-                    except Exception as e:
-                        traceback.print_exc()
-
-    async def build_emporia_objects(self):
-
-        # Create a parent folder to hold devices
-        emporia_devices_folder = await self.server.nodes.objects.add_folder(
-            self.index,
-            "Vue Devices",
-        )
-
-        self.vue.get_devices()
-
-        for device in self.vue.device_info:
-
-            device_q_name = device.display_name.replace(" ", "_")
-
-            if device.device_name:
-
-                # Initialize node object
-                self.device_nodes[device.device_gid] = {
-                    "node": await emporia_devices_folder.add_object(
-                        self.index,
-                        device.device_name,
-                    ),
-                    "type": "emporia",
-                    "channels": {},
-                }
-
-                device_usage: VueUsageDevice
-                device_usage = self.vue.device_usage_dict[device.device_gid]
-
-                # Add Channels object to node
-                self.device_nodes[device.device_gid]["channels"][
-                    "node"
-                ] = await self.device_nodes[device.device_gid]["node"].add_object(
-                    self.index,
-                    "Channels",
-                )
-
-                for key, param in device_usage.__dict__.items():
-                    if str(key) == "channels":
-
-                        channel_usage: VueDeviceChannelUsage
-                        for channel_number, channel_usage in param.items():
-
-                            print("Build...")
-                            pprint.pp(channel_usage.__dict__)
-
-                            channel_q_name = (
-                                (f"{ device_q_name }.channel_{ channel_number }")
-                                .replace(" ", "_")
-                                .replace(",", "_")
-                            )
-
-                            # Initialize Channel object
-                            self.device_nodes[device.device_gid]["channels"][
-                                str(channel_number)
-                            ] = {}
-
-                            # Add Channel node
-                            self.device_nodes[device.device_gid]["channels"][
-                                str(channel_number)
-                            ]["node"] = await self.device_nodes[device.device_gid][
-                                "channels"
-                            ][
-                                "node"
-                            ].add_object(
-                                self.index,
-                                f"Channel { channel_number }",
-                            )
-
-                            # Add Channel variables to node
-                            channel_node: dict[str, Node]
-                            channel_node = self.device_nodes[device.device_gid][
-                                "channels"
-                            ][str(channel_number)]
-
-                            # Calculate kWh & Wh
-                            if channel_usage.usage is not None:
-                                _wh = ua.DataValue(
-                                    Value=float(channel_usage.usage * 1000),
-                                    StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
-                                )
-                                _kwh = ua.DataValue(
-                                    Value=float(channel_usage.usage),
-                                    StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
-                                )
-                                _percentage = ua.DataValue(
-                                    Value=float(channel_usage.percentage),
-                                    StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
-                                )
-                            else:
-                                _wh = ua.DataValue(
-                                    Value=0.0,
-                                    StatusCode_=ua.StatusCode(ua.StatusCodes.Bad),
-                                )
-                                _kwh = ua.DataValue(
-                                    Value=0.0,
-                                    StatusCode_=ua.StatusCode(ua.StatusCodes.Bad),
-                                )
-                                _percentage = ua.DataValue(
-                                    Value=0.0,
-                                    StatusCode_=ua.StatusCode(ua.StatusCodes.Bad),
-                                )
-
-                            channel_node["usage_kwh"] = await channel_node[
-                                "node"
-                            ].add_variable(
-                                nodeid=NodeId(
-                                    Identifier=f"{ channel_q_name }.usage_kwh",
-                                    NamespaceIndex=self.index,
-                                ),
-                                bname="usage_kwh",
-                                val=_kwh,
-                                varianttype=ua.VariantType.Double,
-                            )
-
-                            channel_node["usage_wh"] = await channel_node[
-                                "node"
-                            ].add_variable(
-                                nodeid=NodeId(
-                                    Identifier=f"{ channel_q_name }.usage_wh",
-                                    NamespaceIndex=self.index,
-                                ),
-                                bname="usage_wh",
-                                val=_wh,
-                                varianttype=ua.VariantType.Double,
-                            )
-                            channel_node["percentage"] = await channel_node[
-                                "node"
-                            ].add_variable(
-                                nodeid=NodeId(
-                                    Identifier=f"{ channel_q_name }.percentage",
-                                    NamespaceIndex=self.index,
-                                ),
-                                bname="percentage",
-                                val=_percentage,
-                                varianttype=ua.VariantType.Double,
-                            )
-                            channel_node["channel_num"] = await channel_node[
-                                "node"
-                            ].add_variable(
-                                nodeid=NodeId(
-                                    Identifier=f"{ channel_q_name }.channel_num",
-                                    NamespaceIndex=self.index,
-                                ),
-                                bname="channel_num",
-                                val=channel_usage.channel_num,
-                                varianttype=ua.VariantType.String,
-                            )
-                            channel_node["name"] = await channel_node[
-                                "node"
-                            ].add_variable(
-                                nodeid=NodeId(
-                                    Identifier=f"{ channel_q_name }.name",
-                                    NamespaceIndex=self.index,
-                                ),
-                                bname="name",
-                                val=channel_usage.name,
-                                varianttype=ua.VariantType.String,
-                            )
-                    else:
-                        # Add other device parameters to Device node
-                        self.device_nodes[device.device_gid][
-                            key
-                        ] = await self.device_nodes[device.device_gid][
-                            "node"
-                        ].add_variable(
-                            nodeid=NodeId(
-                                Identifier=f"{ device_q_name }.{ key }",
-                                NamespaceIndex=self.index,
-                            ),
-                            bname=key,
-                            val=param,
+                        print(
+                            bcolors.OKGREEN
+                            + "SUCCESS "
+                            + bcolors.ENDC
+                            + f"Node ID created: { device_q_name }.{ _attribute_name }"
                         )
 
-        # print("Built...")
-        # pprint.pp(self.device_nodes)
+                    except BadNodeIdExists:
 
-    async def update_emporia_device_usage(self):
+                        print(
+                            bcolors.WARNING
+                            + "WARNING "
+                            + bcolors.ENDC
+                            + f"Node ID already exists, most likely a duplicate attribute: { device_q_name }.{ _attribute_name }"
+                        )
 
-        try:
+                    except Exception as e:
 
-            # Update device usage deict
-            await asyncio.to_thread(self.vue.get_device_usage)
+                        print(
+                            bcolors.FAIL
+                            + "FAILED "
+                            + bcolors.ENDC
+                            + f"Failed to create Node ID: { device_q_name }.{ _attribute_name }"
+                        )
 
-            # print("Updating...")
-            # pprint.pp(self.device_nodes)
-
-            for device_gid, device_node in self.device_nodes.items():
-
-                if device_node["type"] != "emporia":
-                    continue
-
-                if device_gid not in self.vue.device_usage_dict:
-                    continue
-
-                device_usage: VueUsageDevice
-                device_usage = self.vue.device_usage_dict[device_gid]
-
-                for key, param in device_usage.__dict__.items():
-                    if str(key) == "channels":
-
-                        channel_usage: VueDeviceChannelUsage
-                        for channel_number, channel_usage in param.items():
-
-                            print("Update...")
-                            pprint.pp(channel_usage.__dict__)
-
-                            # print(channel_usage.__dict__)
-
-                            channel_node = device_node["channels"][str(channel_number)]
-
-                            # Calculate kWh & Wh
-                            if channel_usage.usage is not None:
-                                _wh = ua.DataValue(
-                                    Value=float(channel_usage.usage * 1000),
-                                    StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
-                                )
-                                _kwh = ua.DataValue(
-                                    Value=float(channel_usage.usage),
-                                    StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
-                                )
-                                _percentage = ua.DataValue(
-                                    Value=float(channel_usage.percentage),
-                                    StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
-                                )
-                            else:
-                                print("NULLLLLLL -----------------")
-                                _wh = ua.DataValue(
-                                    Value=0.0,
-                                    StatusCode_=ua.StatusCode(ua.StatusCodes.Bad),
-                                )
-                                _kwh = ua.DataValue(
-                                    Value=0.0,
-                                    StatusCode_=ua.StatusCode(ua.StatusCodes.Bad),
-                                )
-                                _percentage = ua.DataValue(
-                                    Value=0.0,
-                                    StatusCode_=ua.StatusCode(ua.StatusCodes.Bad),
-                                )
-
-                            await channel_node["usage_kwh"].set_value(_kwh)
-                            await channel_node["usage_wh"].set_value(_wh)
-                            await channel_node["percentage"].set_value(_percentage)
-                            await channel_node["channel_num"].set_value(
-                                channel_usage.channel_num
-                            )
-                            await channel_node["name"].set_value(channel_usage.name)
-
-                    else:
-
-                        await device_node[key].set_value(param)
-
-        except Exception as e:
-
-            traceback.print_exc()
+                        traceback.print_exc()
 
     async def update_hubitat_device_usage(self):
 
@@ -412,7 +175,12 @@ class AsyncServer:
                 device_info = self.hubitat.get_device_info(device_id)
 
                 if "attributes" not in device_info:
-                    print("Attribute not found")
+                    print(
+                        bcolors.WARNING
+                        + "WARNING "
+                        + bcolors.ENDC
+                        + f"No device attributes found in device object: { device_info }"
+                    )
                     continue
 
                 _live_device_attributes = device_info["attributes"]
@@ -422,87 +190,85 @@ class AsyncServer:
                     if "name" in attribute:
                         _attribute_name = attribute["name"]
                     else:
+                        print(
+                            bcolors.WARNING
+                            + "WARNING "
+                            + bcolors.ENDC
+                            + f"No name found in device object: { _live_device_attributes }"
+                        )
                         continue
 
                     if "currentValue" in attribute:
                         _attribute_value = attribute["currentValue"]
                     else:
+                        print(
+                            bcolors.WARNING
+                            + "WARNING "
+                            + bcolors.ENDC
+                            + f"No currentValue found in device object: { _live_device_attributes }"
+                        )
                         continue
 
                     if "dataType" in attribute:
                         _attribute_type = attribute["dataType"]
                     else:
+                        print(
+                            bcolors.WARNING
+                            + "WARNING "
+                            + bcolors.ENDC
+                            + f"No dataType found in device object: { _live_device_attributes }"
+                        )
+                        continue
+
+                    if _attribute_value is None:
+                        print(
+                            bcolors.WARNING
+                            + "WARNING "
+                            + bcolors.ENDC
+                            + f"Attribute value is null for { _attribute_name } in { device_info['name'] }"
+                        )
+                        continue
+
+                    if _attribute_type == "NUMBER":
+                        _attribute_value = float(_attribute_value)
+                        _attribute_varianttype = ua.VariantType.Double
+
+                    elif _attribute_type == "STRING" or _attribute_type == "ENUM":
+                        _attribute_value = str(_attribute_value)
+                        _attribute_varianttype = ua.VariantType.String
+                    else:
+                        print(
+                            bcolors.WARNING
+                            + "WARNING "
+                            + bcolors.ENDC
+                            + f"Attribute type is not supported for { _attribute_name } in { device_info['name'] }: { _attribute_type }"
+                        )
                         continue
 
                     if _attribute_name in device_node["attributes"]:
+                        try:
 
-                        print(
-                            f"Setting: { device_node['attributes'][_attribute_name] } = { _attribute_value }"
-                        )
+                            await device_node["attributes"][_attribute_name].set_value(
+                                _attribute_value
+                            )
 
-                        await device_node["attributes"][_attribute_name].set_value(
-                            _attribute_value
-                        )
+                            print(
+                                bcolors.OKGREEN
+                                + "SUCCESS "
+                                + bcolors.ENDC
+                                + f"Set { device_node['attributes'][_attribute_name] } = { _attribute_value }"
+                            )
 
-                # for key, attribute in device_node["attributes"].items():
+                        except Exception as e:
 
-                #     if key in _live_device_attributes:
+                            print(
+                                bcolors.FAIL
+                                + "FAILED "
+                                + bcolors.ENDC
+                                + f"Set { device_node['attributes'][_attribute_name] } = { _attribute_value }"
+                            )
 
-                # print(device_node)
-
-                # device_usage: VueUsageDevice
-                # device_usage = self.vue.device_usage_dict[device_gid]
-
-                # for key, param in device_usage.__dict__.items():
-                #     if str(key) == "channels":
-
-                #         channel_usage: VueDeviceChannelUsage
-                #         for channel_number, channel_usage in param.items():
-
-                #             print(channel_usage.__dict__)
-
-                #             channel_node = device_node["channels"][str(channel_number)]
-
-                #             # Calculate kWh & Wh
-                #             if channel_usage.usage is not None:
-                #                 _wh = ua.DataValue(
-                #                     Value=float(channel_usage.usage * 1000),
-                #                     StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
-                #                 )
-                #                 _kwh = ua.DataValue(
-                #                     Value=float(channel_usage.usage),
-                #                     StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
-                #                 )
-                #                 _percentage = ua.DataValue(
-                #                     Value=float(channel_usage.percentage),
-                #                     StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
-                #                 )
-                #             else:
-                #                 print("NULLLLLLL -----------------")
-                #                 _wh = ua.DataValue(
-                #                     Value=0.0,
-                #                     StatusCode_=ua.StatusCode(ua.StatusCodes.Bad),
-                #                 )
-                #                 _kwh = ua.DataValue(
-                #                     Value=0.0,
-                #                     StatusCode_=ua.StatusCode(ua.StatusCodes.Bad),
-                #                 )
-                #                 _percentage = ua.DataValue(
-                #                     Value=0.0,
-                #                     StatusCode_=ua.StatusCode(ua.StatusCodes.Bad),
-                #                 )
-
-                #             await channel_node["usage_kwh"].set_value(_kwh)
-                #             await channel_node["usage_wh"].set_value(_wh)
-                #             await channel_node["percentage"].set_value(_percentage)
-                #             await channel_node["channel_num"].set_value(
-                #                 channel_usage.channel_num
-                #             )
-                #             await channel_node["name"].set_value(channel_usage.name)
-
-                #     else:
-
-                #         await device_node[key].set_value(param)
+                            traceback.print_exc()
 
         except Exception as e:
 
@@ -520,26 +286,20 @@ class AsyncServer:
 async def periodic_update(client: AsyncServer):
     while True:
 
-        print("Updating device usage...")
+        await client.update_hubitat_device_usage()  # Fetch the usage data periodically
 
-        if ADD_EMPORIA_DEVICES:
-            await client.update_emporia_device_usage()  # Fetch the usage data periodically
-
-        if ADD_HUBITAT_DEVICES:
-            await client.update_hubitat_device_usage()  # Fetch the usage data periodically
-
-        print("Done updating device usage...")
+        print(bcolors.OKBLUE + "DONE " + bcolors.ENDC + "Node values updated...")
 
         await asyncio.sleep(10)  # Adjust sleep time based on your requirements
 
 
 async def main():
     async with AsyncServer(
-        "opc.tcp://0.0.0.0:4840",
-        "TriNova AC Project",
+        f"opc.tcp://0.0.0.0:{ HUBITAT_PORT }",
+        "TriNova AC Project - Hubitat",
     ) as client:
 
-        print("Starting...")
+        print(bcolors.OKBLUE + "DONE " + bcolors.ENDC + "Service starting...")
 
         # Start the update_device_usage function as a background task
         asyncio.create_task(periodic_update(client))
